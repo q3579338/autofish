@@ -1,0 +1,7 @@
+mss
+soundcard
+scipy
+numpy
+pillow
+opencv-python-headless
+rapidocr_onnxruntime
