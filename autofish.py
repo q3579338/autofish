@@ -15,6 +15,7 @@
 """
 import ctypes
 import ctypes.wintypes as wt
+import multiprocessing
 import os
 import random
 import sys
@@ -32,10 +33,25 @@ from rapidocr_onnxruntime import RapidOCR
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+if os.name == "nt":
+    try:
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+
+
+def _bundle_dir():
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+HERE = _bundle_dir()
 ASSETS = os.path.join(HERE, "assets")
 
 # ---------------- 可调参数 ----------------
@@ -259,11 +275,10 @@ class BiteListener:
     """主进程侧的句柄：arm/disarm/event/last_ncc 与旧接口一致。"""
 
     def __init__(self):
-        import multiprocessing as mp
-        self._armed = mp.Value("i", 0)
-        self._stop = mp.Value("i", 0)
-        self._conn, child = mp.Pipe()
-        self._proc = mp.Process(target=_audio_worker, args=(child, self._armed, self._stop), daemon=True)
+        self._armed = multiprocessing.Value("i", 0)
+        self._stop = multiprocessing.Value("i", 0)
+        self._conn, child = multiprocessing.Pipe()
+        self._proc = multiprocessing.Process(target=_audio_worker, args=(child, self._armed, self._stop), daemon=True)
         self.event = threading.Event()
         self.last_ncc = 0.0
         self.last_t = 0.0
@@ -358,18 +373,49 @@ def check_hotkeys():
 MODES = {"1": "台钓", "2": "路亚"}
 
 
+def print_banner():
+    print()
+    print("=" * 46)
+    print("  三角洲行动 · 自动钓鱼")
+    print("=" * 46)
+    print("  1. 先打开游戏，走到水边，拿出鱼竿")
+    print("  2. 下面直接回车（默认台钓）")
+    print("  3. 用鼠标点一下游戏窗口，把它切到最前面")
+    print("  4. 脚本开始自动抛竿 / 听咬钩 / 刺鱼")
+    print()
+    print("  F8  暂停 / 继续")
+    print("  F9  退出")
+    print("  游戏不在前台时，不会点鼠标")
+    print("  提示区按 2560×1440 全屏标定，其它分辨率可能对不齐")
+    print("  这是宏，封号风险自负")
+    print("=" * 46)
+    print()
+
+
 def choose_mode():
     """命令行参数 --mode 台钓/路亚，或启动时手动选。"""
     for i, a in enumerate(sys.argv):
         if a == "--mode" and i + 1 < len(sys.argv):
             return sys.argv[i + 1]
     print("选择模式：")
-    print("  1  台钓（拋竿 → 等咬钩音 → 刺鱼）")
-    print("  2  路亚（刺鱼后需长按左键拖动鼠标拉鱼，尚未实现）")
+    print("  1  台钓（拋竿 → 等咬钩音 → 刺鱼）  ← 直接回车就用这个")
+    print("  2  路亚（尚未实现）")
     while True:
-        c = input("输入 1 或 2 后回车 [默认 1]: ").strip() or "1"
+        try:
+            c = input("输入 1 或 2 后回车 [默认 1]: ").strip() or "1"
+        except EOFError:
+            return MODES["1"]
         if c in MODES:
             return MODES[c]
+
+
+def wait_exit():
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        input("按回车关闭窗口...")
+    except Exception:
+        time.sleep(8)
 
 
 def single_instance():
@@ -383,8 +429,18 @@ def single_instance():
 
 def main():
     global _paused
+    if os.name == "nt":
+        try:
+            ctypes.windll.kernel32.SetConsoleTitleW("三角洲行动 · 自动钓鱼")
+        except Exception:
+            pass
+    missing = [n for n in ("bite_wave.npy", "show_wave.npy") if not os.path.isfile(os.path.join(ASSETS, n))]
+    if missing:
+        log(f"缺少音效文件: {', '.join(missing)}（assets 目录）")
+        return
     if not single_instance():
         return
+    print_banner()
     mode = choose_mode()
     if mode != "台钓":
         log(f"「{mode}」模式尚未实现，先用台钓。")
@@ -533,9 +589,15 @@ def main():
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     try:
         main()
     except KeyboardInterrupt:
         log("Ctrl+C 退出")
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        log("出错了，把上面的文字截图保存下来")
     finally:
         right_up()
+        wait_exit()
